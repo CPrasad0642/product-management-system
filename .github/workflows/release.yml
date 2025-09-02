@@ -1,0 +1,82 @@
+# .github/workflows/release.yml
+
+name: 'AI Release Drafter'
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  draft_release:
+    name: 'Draft AI Release Notes'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 'Checkout Code'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 'Set up Python'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: 'Install Dependencies'
+        run: pip install PyGithub requests
+
+      - name: 'Get Start Reference for Comparison'
+        id: startref
+        run: |
+          PREVIOUS_TAG=$(git describe --tags --abbrev=0 ${{ github.ref_name }}~1 2>/dev/null) || true
+          if [ -z "$PREVIOUS_TAG" ]; then
+            echo "No previous tag found. Using the repository's first commit as the starting point."
+            START_POINT=$(git rev-list --max-parents=0 HEAD)
+          else
+            echo "Found previous tag: ${PREVIOUS_TAG}"
+            START_POINT=$PREVIOUS_TAG
+          fi
+          echo "start_point=${START_POINT}" >> $GITHUB_OUTPUT
+          echo "Comparison range will be from ${START_POINT} to ${{ github.ref_name }}"
+
+      - name: 'Read Story ID from agile_story.txt'
+        id: storyid
+        run: |
+          if [ -f agile_story.txt ]; then
+            STORY_ID=$(cat agile_story.txt | tr -d ' \n\r')
+            echo "id=${STORY_ID}" >> $GITHUB_OUTPUT
+            echo "Found Story ID in agile_story.txt: ${STORY_ID}"
+          else
+            echo "Warning: agile_story.txt not found."
+            echo "id=" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 'Generate AI Release Notes'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          SN_INSTANCE: ${{ secrets.SN_INSTANCE }}
+          SN_USER: ${{ secrets.SN_USER }}
+          SN_PASSWORD: ${{ secrets.SN_PASSWORD }}
+        run: |
+          python release_notes_generator.py \
+            --repo "${{ github.repository }}" \
+            --from-tag "${{ steps.startref.outputs.start_point }}" \
+            --to-tag "${{ github.ref_name }}" \
+            --servicenow-instance "${{ env.SN_INSTANCE }}" \
+            --story-id "${{ steps.storyid.outputs.id }}"
+
+      - name: 'Create GitHub Release'
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref_name }}
+          release_name: 'Release ${{ github.ref_name }}'
+          body_path: 'release_notes_${{ github.ref_name }}.md'
+          draft: false
+          prerelease: false
